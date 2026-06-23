@@ -14,12 +14,43 @@ def normalize_text(value):
     return str(value).strip()
 
 
-def find_matching_column(columns, keywords):
-    for col in columns:
-        col_text = str(col).lower()
-        if all(keyword.lower() in col_text for keyword in keywords):
-            return col
-    return None
+def column_score(col_name, keywords):
+    text = str(col_name).lower()
+    score = 0
+    for keyword in keywords:
+        if keyword.lower() in text:
+            score += 10
+    if "unnamed" in text:
+        score -= 5
+    return score
+
+
+def infer_best_column(df, role):
+    candidates = list(df.columns)
+    if role == "warehouse":
+        keywords = ["창고", "warehouse", "보관", "위치"]
+    elif role == "item":
+        keywords = ["품목", "제품", "자재", "item", "material"]
+    elif role == "spec":
+        keywords = ["규격", "spec", "사양", "모델"]
+    else:
+        keywords = ["양품", "재고", "수량", "qty", "qty.", "amount", "stock"]
+
+    scored = []
+    for col in candidates:
+        score = column_score(col, keywords)
+        sample = df[col].dropna().head(10).astype(str).str.strip()
+        sample_nonempty = sample[sample != ""]
+        if role == "qty" and not sample_nonempty.empty:
+            numeric_ratio = pd.to_numeric(sample_nonempty, errors="coerce").notna().mean()
+            score += int(numeric_ratio * 20)
+        elif role in ("warehouse", "item", "spec") and not sample_nonempty.empty:
+            text_ratio = sample_nonempty.str.contains(r"[A-Za-z가-힣0-9]", regex=True).mean()
+            score += int(text_ratio * 5)
+        scored.append((score, col))
+
+    scored.sort(key=lambda x: (x[0], str(x[1])), reverse=True)
+    return scored[0][1] if scored else candidates[0]
 
 
 @st.cache_data(show_spinner=False)
@@ -54,24 +85,50 @@ if df.empty:
 st.subheader("컬럼 매핑")
 columns = list(df.columns)
 
-default_warehouse = find_matching_column(columns, ["창고"]) or columns[0]
-default_item = find_matching_column(columns, ["품목"]) or columns[min(1, len(columns) - 1)]
-default_spec = find_matching_column(columns, ["규격"]) or columns[min(2, len(columns) - 1)]
-default_qty = (
-    find_matching_column(columns, ["양품", "재고"])
-    or find_matching_column(columns, ["수량"])
-    or columns[min(3, len(columns) - 1)]
-)
+default_warehouse = infer_best_column(df, "warehouse")
+default_item = infer_best_column(df, "item")
+default_spec = infer_best_column(df, "spec")
+default_qty = infer_best_column(df, "qty")
+
+helper_cols = st.columns(4)
+with helper_cols[0]:
+    st.caption(f"자동 추천: `{default_warehouse}`")
+with helper_cols[1]:
+    st.caption(f"자동 추천: `{default_item}`")
+with helper_cols[2]:
+    st.caption(f"자동 추천: `{default_spec}`")
+with helper_cols[3]:
+    st.caption(f"자동 추천: `{default_qty}`")
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    warehouse_col = st.selectbox("창고명 컬럼", columns, index=columns.index(default_warehouse))
+    warehouse_col = st.selectbox(
+        "창고명 컬럼",
+        columns,
+        index=columns.index(default_warehouse),
+        help="엑셀에서 창고명이 들어있는 열을 선택합니다.",
+    )
 with col2:
-    item_col = st.selectbox("품목 컬럼", columns, index=columns.index(default_item))
+    item_col = st.selectbox(
+        "품목 컬럼",
+        columns,
+        index=columns.index(default_item),
+        help="엑셀에서 품목명이 들어있는 열을 선택합니다.",
+    )
 with col3:
-    spec_col = st.selectbox("규격 컬럼", columns, index=columns.index(default_spec))
+    spec_col = st.selectbox(
+        "규격 컬럼",
+        columns,
+        index=columns.index(default_spec),
+        help="엑셀에서 규격 또는 사양이 들어있는 열을 선택합니다.",
+    )
 with col4:
-    qty_col = st.selectbox("양품 재고 수량 컬럼", columns, index=columns.index(default_qty))
+    qty_col = st.selectbox(
+        "양품 재고 수량 컬럼",
+        columns,
+        index=columns.index(default_qty),
+        help="엑셀에서 양품 재고 수량이 들어있는 열을 선택합니다.",
+    )
 
 st.subheader("필터 설정")
 warehouse_filter = st.text_input(
